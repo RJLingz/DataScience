@@ -1,0 +1,687 @@
+---
+title: "project 3"
+author: "George"
+date: "May 20, 2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+```{r}
+library(dplyr)
+library(DataExplorer)
+library(readr)
+library(hrbrthemes)
+library(tidyr)
+library(ggplot2)
+library(viridis)
+library(ggthemes)
+library(readxl)
+library(janitor)
+library(recipes)
+
+
+
+
+######open the data#####3
+data <-read_excel("Thera Bank_Personal_Loan_Modelling-dataset-1.xlsx", sheet = 2)
+
+######explore the data####################
+###based on the data description there are columns that need to be changed into factor, 1.e. ZIPCODE, (no order)
+###Education level, order (1,2,3), Personal loan, Securities account, CD account, online, Credit Card. 
+###clean names because its annoying dealing with spaces in R#####################
+
+data_clean <- data%>%clean_names()%>%
+                mutate_at(vars(id,zip_code, education:credit_card, -mortgage), as.factor)%>%
+                ##arrange in order
+                mutate(education = factor(education , levels = c("1", "2", "3")))
+
+
+create_report(
+                data = data_clean,
+                output_file = "Thera_Exploration.html",
+                output_dir = getwd(),
+                config = configure_report(add_plot_bar = TRUE,
+                                                       add_plot_intro = TRUE,
+                                                       add_plot_histogram = TRUE,
+                                                       add_plot_density = TRUE,
+                                                       #plot_boxplot_args = list("by" = "personal_loan"),
+                                                       add_plot_prcomp = FALSE,
+                                                       add_plot_correlation = TRUE,
+                                                       add_plot_scatterplot = FALSE,
+                                                       add_plot_qq = TRUE)
+
+)
+
+
+
+
+plot_boxplot(data_clean, by = "Personal Loan")
+
+###there are missing values in the famil_members column and there are negative education values###
+##we use these to train our recipes and impute the values as we do not want to lose 7% of the datat
+
+test_impute <- data_clean%>%select(-experience_in_years)%>%
+                       filter( is.na(family_members)== T )%>%
+                       mutate(family_members  = as.integer(family_members))
+
+train_impute <- data_clean%>%select(-experience_in_years)%>%
+                              anti_join(test_impute, by = "id")
+
+#####make the recipe to impute the values, the experience and the number of family members
+
+recipe_data <-  recipe(personal_loan ~., data = train_impute)
+
+impute_data <- recipe_data%>%
+                    step_bagimpute( family_members,
+                                   seed_val = 123,
+                                   trees = 30)
+run_impute <- prep(impute_data, training = train_impute)
+
+impute <- bake(run_impute, new_data = test_impute, everything())
+   
+
+data_new <- train_impute%>%bind_rows(impute)
+
+
+#####report after imputing
+
+
+
+```
+########assumptions about data based on accepting or denying the loan######
+
+
+
+###write code in parallel######
+```{r}
+###code in parallel
+##install.packages("multidplyr")
+library(multidplyr)
+library(parallel)
+library(ggthemes)
+
+####r session was crashing so decided to parallelise the code#######
+cl <- detectCores()
+cl
+
+######create the groups in the data and use the necessary groups
+
+
+cluster <- new_cluster(5)
+
+plot_cats <- data_new%>%mutate(family_members = as.factor(family_members))%>%
+                       select_if(is.factor)%>%
+                       select(-c(id))%>%
+                       select(personal_loan, everything())%>%
+                       tidyr::pivot_longer(cols = zip_code:credit_card , 
+                        names_to = "Variables",
+                        values_to = "Value")
+
+
+try <- plot_cats%>%partition(cluster)%>%
+                  count(personal_loan, Variables,Value )%>%
+                  collect()
+
+#########################plotting the densities#####################
+
+
+plot_cont <- data_new%>%select(personal_loan, everything())%>%
+            ###adding group_by to not drop personal_loan###
+            group_by(personal_loan)%>%
+                  select_if(is.double)%>%
+                  select(-family_members)%>%
+            pivot_longer(cols = age_in_years:mortgage, 
+                         names_to = "Variables", values_to = "Value")
+                    
+#####create rows samples with 1:8
+
+
+
+
+
+
+
+parallel::stopCluster(cluster)
+
+###Plot the different groups######
+
+
+
+```
+####Plotting the densities#########
+```{r}
+
+
+pdf("variation_with_loan.pdf", paper = "special", width = 14, height = 8)
+plot_cont%>%ggplot(aes(x = Value, fill = personal_loan , color = personal_loan))+
+            facet_wrap(~Variables , scales = "free", ncol = 5)+
+            geom_density(alpha = 0.5, adjust = 2)+
+            scale_color_tableau()+
+            scale_fill_tableau()+
+            theme_minimal()
+dev.off()
+
+
+```
+
+
+```{r}
+
+pdf("categorical_1.pdf", paper = "special", width = 14, height = 8)
+try%>%filter(Variables != "zip_code")%>%ggplot(aes(x = Value, y = n , color = personal_loan, fill = personal_loan))+
+            facet_wrap(~ Variables, scales = "free", ncol = 3)+
+            geom_bar(stat = "identity")+
+            scale_color_tableau()+
+            scale_fill_tableau()+
+            theme_minimal()
+dev.off()
+
+try%>%filter(Variables == "zip_code")%>%ggplot(aes(x = reorder(Value, -n), y = n , color = personal_loan, fill = personal_loan))+
+            
+            geom_bar(stat = "identity", alpha = 0.5)+
+            scale_color_tableau()+
+            scale_fill_tableau()+
+            theme_minimal()+
+  theme(axis.text.x = element_text(angle = 90,hjust = 1 ))
+        theme(axis.text.x = element_text(anlge = 90, hjust = 1))
+
+
+
+```
+
+
+
+
+
+###using gower distance to cluster#############
+
+```{r}
+
+
+
+data_clus <- data_new%>%tidyr::drop_na()%>%mutate(family_members = factor(family_members, levels = c(1,2,3,4)))
+                      
+recipe_centre <- recipe(personal_loan  ~., data = data_clus)
+
+###scale and centre the variables
+
+data_cluster <- recipe_centre%>%
+                      step_scale(all_numeric())%>%
+                      step_center(all_numeric())%>%
+                      step_nzv(all_predictors())
+                      #step_YeoJohnson(all_numeric())
+
+
+
+cluster_final <- prep(data_cluster, training = data_clus , verbose = F, retain = T)
+
+cluster_data <- cluster_final$template
+
+DataExplorer::plot_density(sqrt(cluster_data$cc_avg - min(cluster_data$cc_avg)))
+
+DataExplorer::plot_density(sqrt(cluster_data$income_in_k_month - min(cluster_data$income_in_k_month)))
+
+
+
+
+
+####transformations to normalise the data#############
+new_data <- cluster_data%>%mutate(income_in_k_month = sqrt(income_in_k_month - min(income_in_k_month)),
+                      cc_avg =     sqrt(cc_avg - min(cc_avg))
+                      
+                      )
+
+
+```
+
+
+
+```{r}
+
+library(cluster)
+set.seed(8)
+
+gower.dissimilarity <- daisy(new_data%>%select(-c(id,zip_code)), metric = "gower",
+                             type = list(asymm = c("personal_loan","credit_card", "online", "cd_account", 
+                                                   "securities_account")))
+
+gower.dist <- as.matrix(gower.dissimilarity)
+
+##########when no dissimialirity matrix is given can only use frey, mclain, cindex, silhouette and dunn index######
+
+r <-NbClust::NbClust(diss = gower.dissimilarity, distance = NULL,
+min.nc = 2, max.nc = 9 , method = "ward.D2", index = c("silhouette"))
+
+
+
+
+
+sil_width <- c(NA)
+for(i in 2:15){  
+  pam_fit <- pam(gower.dist, diss = TRUE, k = i)  
+  sil_width[i] <- pam_fit$silinfo$avg.width  
+}
+plot(1:15, sil_width,
+     xlab = "Number of clusters",
+     ylab = "Silhouette Width")
+lines(1:15, sil_width)
+
+###########final fit######
+
+pam_final <- pam(gower.dist, diss = TRUE, k = 6)
+
+
+  cluster_data <- tibble(cluster = pam_final$clustering)%>%
+                        mutate(cluster = as.factor(cluster))
+
+
+clustered_data <- new_data%>%
+                            bind_cols(cluster_data)
+
+
+
+```
+
+#############################describing the clusters################################
+
+```{r}
+
+library(multidplyr)
+library(parallel)
+library(ggthemes)
+
+cl <- detectCores()
+
+
+
+cluster <- new_cluster(5)
+
+
+
+
+plot_clust_cat <- clustered_data%>%select_if(is.factor)%>%
+                 select(cluster,everything())%>%
+                 select(-c(id, zip_code))%>%
+                 pivot_longer(cols = family_members:personal_loan ,
+                              names_to = "Variable", 
+                              values_to = "Value")
+
+try_clust_cat <- plot_clust_cat%>%partition(cluster)%>%
+                                  count(cluster, Variable, Value)%>%
+                                  collect()
+
+
+
+pdf("cluster_group_cats.pdf", paper = "special", width = 14, height = 8 )
+try_clust_cat%>%ggplot(aes(x = Value, y = n, fill= cluster, color = cluster))+
+                    facet_wrap(~ Variable, scales = "free", nrow = 2)+
+                    geom_bar(stat = "identity")+
+                    scale_fill_tableau()+
+                    scale_color_tableau()+
+                    theme_minimal()
+dev.off()
+
+
+##add unscaled data to explain the values better##########
+plot_cont_clust <- data_clus%>%bind_cols(clustered_data%>%select(cluster))%>%group_by(cluster)%>%
+                 select_if(is.double)%>%
+                 pivot_longer(cols = age_in_years:cc_avg,
+                              names_to = "Variable",
+                              values_to = "Value")
+
+
+
+pdf("continous_data.cluster.pdf", paper = "special", width = 14, height = 10)
+plot_cont_clust%>%ggplot(aes(x = Value, fill = cluster, color = cluster))+
+                  facet_wrap(~ Variable , scales = "free", nrow = 2)+
+                  geom_density(alpha = 0.5, adjust = 3)+
+                  scale_color_tableau()+
+                  scale_fill_tableau()+
+                  theme_minimal()
+dev.off()
+
+
+
+```
+
+
+
+
+
+######convert all variables to numerical###
+
+```{r}
+
+data_new%>%pivot_wider( 
+                              
+                        names_from = c())
+
+?pivot_wider
+```
+
+
+
+```{r}
+
+library(rpart)
+library(rpart.plot)
+library(rsample)
+library(caret)
+library(minDiff)
+
+
+set.seed(123)
+
+data_new$income_in_k_month
+
+train <- data_new%>%drop_na()%>%
+           sample_frac(0.70)
+
+
+################set the test files#####################
+test <- anti_join(data_new%>%drop_na(),
+                          train
+)
+########################sampled to have the same distribution in the personal loan variable####
+#######want to sample with the same distribution of people who have accepted and denied personal loans####
+set.seed(123)
+assign_values <- create_groups(as.data.frame(new_data)%>%bind_cols(clustered_data%>%select(cluster)), 
+                               criteria_scale = c("income_in_k_month", "cc_avg"),
+                               criteria_nominal = c("personal_loan"),
+                               tolerance_nominal = c(10,Inf),
+                               sets = 10, 
+                               repetitions = 5000)
+
+#####################################################
+
+train_new <- assign_values%>%filter(newSet %in% c(1,2,3,4,5,6,7,8,9))%>%select(-newSet)
+
+test_new <- anti_join(assign_values%>%select(-newSet), train_new)
+
+
+```
+####################BORUTA VARIABLE IMPORTANCE###################
+
+
+
+```{r}
+
+library(Boruta)
+
+set.seed(123)
+
+train_boruta <- Boruta(personal_loan ~. -id, data = train_new, doTrace = 2)
+
+print(train_boruta)
+
+
+final_filter <- TentativeRoughFix(train_boruta)
+
+print(final_filter)
+
+boruta_results <- attStats(final_filter)
+
+
+print(boruta_results)
+
+
+pdf("boruta_train.pdf", width = 14, height = 8, paper = "special")
+plot(final_filter, xlab = "", xaxt = "n")
+lz<-lapply(1:ncol(final_filter$ImpHistory),function(i)
+final_filter$ImpHistory[is.finite(final_filter$ImpHistory[,i]),i])
+names(lz) <- colnames(final_filter$ImpHistory)
+Labels <- sort(sapply(lz,median))
+axis(side = 1,las=2,labels = names(Labels),
+at = 1:ncol(final_filter$ImpHistory), cex.axis = 0.7)
+dev.off()
+```
+
+
+
+
+
+
+
+#######predicitons for the test data####################
+
+
+
+
+
+
+
+
+#################################### Plot the different models ############# 
+
+```{r}
+
+
+#########rpart doesnt take predictor variables that are numbers - dumb I know so we need to use make.names to make the levels
+library(rpart.plot)
+library(rattle)
+
+
+
+train_new_level <- train_new%>%mutate(personal_loan = factor(personal_loan, 
+                                                         labels = make.names(levels(personal_loan) )
+                                                         )
+                    )
+
+test_new_level <- test_new%>%mutate(personal_loan = factor(personal_loan, 
+                                                         labels = make.names(levels(personal_loan) )
+                                                         )
+                    )
+
+set.seed(123)
+model_prune <- train(
+      personal_loan ~., data = train_new_level%>%select(-c(id, zip_code)), 
+      method = "rpart",
+      trControl = trainControl(method = "repeatedcv",
+                               repeats = 3,
+                               classProbs=TRUE),
+      tuneLength = 30
+  
+)
+
+
+#########Pltting########
+plot(model_prune)
+model_prune$finalModel
+
+########################building the best rpart model#########cp = 0.006080486######
+unpruned_rpart = prune(model_prune$finalModel, cp= 0.0 ,"CP")
+
+
+
+##unpruned tree#####
+pdf("rpart_unpruned.pdf", paper = "special", width = 14, height = 12)
+rpart.plot(unpruned_rpart)
+dev.off()
+
+
+#Displaying the best decision tree based on rpart
+pdf("rpart.pdf", paper = "special", width = 14, height = 12)
+rpart.plot(model_prune$finalModel)
+dev.off()
+
+#Displaying the best  decision tree based on the Fancy Plot
+fancyRpartPlot(model_prune$finalModel)
+
+predicted.classes.test.response <- model_prune%>%predict(test_new_level, type = "class")
+
+predicted.classes.test.prob <- model_prune%>%predict(test_new_level, type = "prob")
+
+
+mean(predicted.classes.test.response == test_new_level$personal_loan)
+
+
+confusionMatrix(predicted.classes.test.response,(test_new_level$personal_loan))
+
+
+fancyRpartPlot(simpler_rpart)
+
+
+
+length(predicted.classes.test.response)
+
+```
+
+#########################predictig class probabilies###########################
+
+
+```{r}
+
+
+
+library("ROCR")
+library(pROC)
+
+rpartROC <- prediction(predicted.classes.test.prob[,2], test_new_level$personal_loan)
+
+
+plot(performance(rpartROC, "tpr", "fpr"))
+abline(0, 1, lty = 2)
+
+
+AUC <- roc(test_new_level$personal_loan, predicted.classes.test.prob[,2])
+
+
+
+```
+
+
+##########################random forest #################################
+##remove the city variable becuase it has more than 53 categories######
+
+```{r}
+library(caret)
+library(randomForest)
+library(mlr)
+library(parallelMap)
+
+parallelStartSocket(3)
+set.seed(123)
+
+
+
+train.task <- makeClassifTask(data = train_new_level%>%select(-c(zip_code,id)) , 
+                        target = "personal_loan", 
+                        id = "mlr_1")
+
+###Create the learner###########
+
+learner = makeLearner("classif.randomForest", predict.type = "prob", importance = TRUE)
+
+getParamSet(learner)
+
+#####create the parameter set in the data#3
+
+
+resampling.strategy <-   makeResampleDesc("CV", iters = 5)
+parameter_set <- makeParamSet(makeIntegerParam("ntree", lower = 10, upper = 500),
+                              makeIntegerParam("mtry", lower = 3, upper = 24))
+
+
+tune.ctrl = makeTuneControlRandom(maxit = 8)
+
+#########
+tune_learner <- tuneParams(learner = learner, 
+                           task = train.task,
+                           resampling = resampling.strategy,
+                           par.set = parameter_set,
+                           control = makeTuneControlGrid())
+
+parallelStop()
+
+
+
+
+tune_learner$x
+
+# apply optimal hyperparameter set
+
+tuned_learner <- setHyperPars(makeLearner("classif.randomForest", importance = TRUE, predict.type = "prob"),
+                              par.vals = tune_learner$x)
+
+train.res <- train(tuned_learner,
+                   train.task
+                   )
+
+# print final results
+print(train.res)
+
+# predict on test data
+
+task.test <- makeClassifTask(id     = "mlr_test",
+                             data   = test_new_level%>%select(-c(zip_code,id)),
+                             target = "personal_loan")
+
+prediction <- predict(train.res, task.test)
+predict.res <- predict(train.res, task.test)$data$response
+
+
+######################
+
+confusionMatrix(predict.res, test_new_level$personal_loan)
+
+
+# plot test performance of strategy
+signals.test <- class_to_signal(as.numeric(as.vector(predict.res)))
+performance.test <- eval_performance(test_new_level$personal_loan, predict.res)
+
+varImp(train.res)
+
+print(getConfMatrix(prediction))
+getFeatureImportance(train.res, type = 2)
+
+pred = tuneThreshold(prediction)
+preds = setThreshold(prediction, c(X0 = 0.6647988))
+print(getConfMatrix(preds))
+
+#install.packages("iml")
+library(iml)
+
+
+
+
+predictor = Predictor$new(train.res, data = train_new_level%>%select(-c(id,zip_code, personal_loan)), y = train_new_level$personal_loan)
+
+tree = TreeSurrogate$new(predictor, maxdepth = 2)
+
+pdf(paper= "special", width = 14, height = 8, "tree.random.pdf")
+plot(tree)
+dev.off()
+
+
+###AUC score##############
+mlr::performance(preds, mlr::auc)
+
+
+```
+#############h20 ###########
+
+```{r}
+
+
+library("ROCR")
+
+
+
+rpartROC <- prediction(predicted.classes.test.prob[,2], test_new_level$personal_loan)
+
+
+plot(performance(rpartROC, "tpr", "fpr"))
+abline(0, 1, lty = 2)
+
+
+
+
+
+
+```
+

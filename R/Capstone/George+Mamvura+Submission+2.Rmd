@@ -1,0 +1,321 @@
+---
+title: "George Mamvura Submission 2"
+author: "George Mamvura"
+date: "29/08/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+
+library(readr)
+library(openxlsx)
+library(dplyr)
+library(janitor)
+
+
+
+data <- readWorkbook("Insurance Premium Default-Dataset.xlsx", sheet = 1)
+
+
+
+data <- clean_names(data)
+
+data_plot <- data%>%mutate_at(vars("id","marital_status","accomodation", "sourcing_channel", "residence_area_type","default"), as.factor)%>%mutate(Months = floor(age_in_days/30))
+
+
+
+
+
+
+
+```
+
+######create new variables for the data####
+
+steps:- 
+
+1. Create variable for late payment 
+2. Create age in years varible
+4. Create premium bins 
+5. Create has dependents 
+6. Create owns vehicle variable
+7. Create income bins so you know what income bin the people are in 
+
+
+
+```{r}
+
+
+new_data <- data%>%mutate(age_in_years = floor(age_in_days/365),
+              late_payment = if_else((count_3_6_months_late == 0 & count_6_12_months_late== 0 &  count_more_than_12_months_late == 0 ), 0,1),
+              
+              )%>%
+       mutate(late_payment = as.factor(late_payment),
+              marital_status = as.factor(marital_status), 
+              accomodation = as.factor(accomodation),
+              sourcing_channel = as.factor(sourcing_channel),
+              residence_area_type = as.factor(residence_area_type),
+              id = as.factor(id),
+              default = as.factor(default))%>%
+              rename(no_default = default)%>%
+              select(-age_in_days)
+
+
+```
+- everyone has a vehicle and dependents
+
+
+
+```{r}
+
+
+library(ggplot2)
+ggplot(new_data, aes(x=no_default, y=premium, fill=no_default)) +
+  geom_violin(position=position_dodge(1))
+#########look at the income###
+ggplot(new_data, aes(x=no_default, y=income, fill=no_default)) +
+  geom_violin(position=position_dodge(1))
+
+```
+######create income bands in the data#############
+
+Looking at the income values and the premium values and how they vary
+```{r}
+
+
+new_data %>%
+  arrange(desc(income)) %>%
+  mutate(income_corrected = signif(income, digits = 1),
+         premium_corrected = signif(premium, digits = 1))%>%
+  group_by(income_corrected,premium_corrected,no_default)%>%
+  tally()%>%
+  ungroup()%>%
+  mutate(index = row_number())%>%
+  #mutate(country = factor(country, country)) %>%
+  ggplot(aes(x= index , y= income_corrected, size=n, color=no_default)) +
+    geom_point(alpha=0.5) +
+    scale_size(range = c(.1, 29), name="Population (M)")
+
+
+
+premiums <- new_data %>%
+  #arrange(desc(income)) %>%
+  mutate(index = row_number())%>%
+  #mutate(country = factor(country, country)) %>%
+  ggplot(aes(x= index , y= income, color=no_default)) +
+    geom_point(alpha=0.5) +
+    scale_size(range = c(.1, 29), name="Population (M)")+
+    scale_color_tableau() +
+    scale_fill_tableau()+
+    theme_minimal()
+
+
+premiums_paid <- new_data %>%
+  #arrange(desc(income)) %>%
+  mutate(index = row_number())%>%
+  #mutate(country = factor(country, country)) %>%
+  ggplot(aes(x= index , y= premium, color=no_default)) +
+    geom_point(alpha=0.5) +
+    scale_size(range = c(.1, 29), name="Population (M)")+
+    scale_color_tableau() +
+    scale_fill_tableau()+
+    theme_minimal()
+
+
+new_data %>%
+  #arrange(desc(income)) %>%
+  mutate(index = row_number())%>%
+  #mutate(country = factor(country, country)) %>%
+  ggplot(aes(x= risk_score , y= perc_premium_paid_by_cash_credit, color=no_default)) +
+    geom_point(alpha=0.5) +
+    scale_size(range = c(.1, 29), name="Population (M)")+
+    scale_color_tableau() +
+    scale_fill_tableau()+
+    theme_minimal()
+
+
+new_data$premium
+
+
+new_data %>%
+  #arrange(desc(income)) %>%
+  mutate(index = row_number())%>%
+  mutate(income_corrected = signif(income, digits = 1),
+         premium_corrected = signif(premium, digits = 1),
+         perc_premium_paid_by_cash_credit = signif(perc_premium_paid_by_cash_credit, digits = 1)
+         )%>%
+  group_by(perc_premium_paid_by_cash_credit,no_default)%>%
+  tally()%>%
+  ungroup()%>%
+  mutate(index = row_number())%>%
+  ggplot(aes(x= index , y= perc_premium_paid_by_cash_credit,size = n,  color=no_default)) +
+    geom_point(alpha=0.5) +
+    scale_size(range = c(.1, 29), name="Population (M)")+
+    scale_color_tableau() +
+    scale_fill_tableau()+
+    theme_minimal()
+
+
+
+
+```
+
+```{r}
+
+DataExplorer::create_report(new_data,
+                            #output_format = "html",
+                            output_file = "Insurance_report_explore.html",
+                            output_dir = getwd(), 
+                            report_title = "Data `exploration for Insurance Dataset",
+                            y = "default"
+                            
+                            )
+
+
+
+```
+
+###check the values they have 
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(ggthemes)
+
+
+pdf(file = "bar_plots_2.pdf", paper = "special",width=9,height=7)
+new_data%>%ungroup()%>%
+               select( no_default,  late_payment, age_in_years)%>%
+  gather(x, y, late_payment:age_in_years) %>%
+  count(no_default, x, y) %>%
+  ggplot(aes(x = y, y = n, fill = no_default, color = no_default)) +
+    facet_wrap(~ x, ncol = 3, scales = "free") +
+    geom_bar(stat = "identity", alpha = 1) +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1),
+          legend.position = "top") +
+    scale_color_tableau() +
+    scale_fill_tableau()+
+    theme_minimal()
+dev.off()
+
+```
+
+
+```{r}
+
+
+pdf(file = "density_plots.pdf", paper = "special",width=9,height=7)
+new_data%>%select(no_default, colnames(new_data%>%select_if(is.double))) %>%
+            select(no_default, perc_premium_paid_by_cash_credit, age_in_years, income, risk_score, premium)%>%
+  gather(x, y, perc_premium_paid_by_cash_credit:premium) %>%
+  ggplot(aes(x = y, fill = no_default, color = no_default)) +
+    facet_wrap(~ x, ncol = 3, scales = "free") +
+    geom_density(alpha = 1, adjust = 3) +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1),
+          legend.position = "top") +
+    scale_color_tableau() +
+    scale_fill_tableau()+
+    theme_minimal()
+dev.off()
+
+
+```
+
+
+
+```{r}
+DataExplorer::create_report(data_plot,
+                            #output_format = "html",
+                            output_file = "Insurance_report.html",
+                            output_dir = getwd(), 
+                            report_title = "Data `exploration for Insurance Dataset",
+                            y = "default"
+                            
+                            )
+
+```
+
+
+#######SET THE VALUES###
+
+
+
+
+```{r}
+#install.packages("Boruta")
+library(Boruta)
+
+set.seed(123)
+boruta.train <- Boruta(no_default~.-id, data = new_data, doTrace = 2)
+print(boruta.train)
+
+`%ni%` <- Negate(`%in%`)
+
+attStats(boruta.train)%>%
+  mutate(names = rownames(attStats(boruta.train)))%>%
+  filter(names %ni% c("accomodation", "marital_status", "no_of_dep","veh_owned", "residence_area_type"  ) )%>%
+  mutate(new_names = factor(names,levels = c("risk_score", "no_of_premiums_paid", "perc_premium_paid_by_cash_credit", "income",
+                                             "age_in_years", "count_6_12_months_late", "premium", "late_payment", "count_3_6_months_late",
+                                             "sourcing_channel", "count_more_than_12_months_late" )))%>%
+  arrange(desc(meanImp))%>%
+  ggplot(aes(x = new_names, y = meanImp), ) +
+    geom_bar(stat = "identity", alpha = 1, color='skyblue',fill='steelblue') +
+    scale_color_tableau() +
+    scale_fill_tableau()+
+    theme_minimal()+
+    theme(axis.text.x = element_text(angle = 90, hjust = 1),
+          legend.position = "top")
+  
+
+```
+
+
+####variable selection#########
+```{r}
+
+pdf("boruta_train.pdf", width = 14, height = 8, paper = "special")
+
+plot(boruta.train, xlab = "", xaxt = "n")
+
+lz<-lapply(1:ncol(boruta.train$ImpHistory),function(i)
+
+boruta.train$ImpHistory[is.finite(boruta.train$ImpHistory[,i]),i])
+
+names(lz) <- colnames(boruta.train$ImpHistory)
+
+Labels <- sort(sapply(lz,median))
+
+axis(side = 1,las=2,labels = names(Labels),
+
+at = 1:ncol(boruta.train$ImpHistory), cex.axis = 0.7)
+
+dev.off()
+
+```
+
+
+```{r}
+
+library(lattice)
+
+library(rpart)
+
+#library(brglm)
+
+#install.packages("brglm")
+
+
+
+xyplot(new_data$premium ~ new_data$late_payment , group = new_data$no_default, grid = T, asp = 1)
+
+xyplot(train_set$dim_1 ~ train_set$dim_5 , group = train_set$car, grid = T, asp = 1)
+
+new_data$by
+```
+

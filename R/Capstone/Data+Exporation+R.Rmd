@@ -1,0 +1,183 @@
+---
+title: "markdown R"
+author: "George Mamvura"
+date: "14/08/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+library(readr)
+library(openxlsx)
+library(dplyr)
+library(janitor)
+
+?openxlsx::readWorkbook
+
+data <- readWorkbook("Insurance Premium Default-Dataset.xlsx", sheet = 1)
+
+
+
+data <- clean_names(data)
+
+data_plot <- data%>%mutate_at(vars("id","marital_status","accomodation", "sourcing_channel", "residence_area_type","default"), as.factor)%>%mutate(Months = floor(age_in_days/30))
+
+DataExplorer::create_report(data_plot,
+                            #output_format = "html",
+                            output_file = "Insurance_report.html",
+                            output_dir = getwd(), 
+                            report_title = "Data `exploration for Insurance Dataset",
+                            y = "default"
+                            
+                            )
+
+
+
+
+
+#####plot correlations for numeric data####
+
+DataExplorer::plot_correlation(data_plot%>%select_if(is.double)%>%
+                                 bind_cols(data_plot%>%select(default)))
+
+
+```
+
+
+
+
+######
+
+
+```{r}
+
+pdf(file = "violin_plots.pdf", paper = "special",width=9,height=7)
+data_plot%>%select(default, colnames(data_plot%>%select_if(is.double))) %>%
+            select( default, perc_premium_paid_by_cash_credit, age_in_days,  risk_score, premium, no_of_premiums_paid)%>%
+  gather(x, y, perc_premium_paid_by_cash_credit:premium) %>%
+  ggplot(aes(x=default, y=y, fill=default))+
+ 
+    facet_wrap(~ x, ncol = 3, scales = "free") +
+    geom_violin(trim=FALSE)+
+  geom_boxplot(width=0.1, fill="white")+
+  labs(title="Numeric variables by default",x="Default")+
+    scale_color_tableau() +
+    scale_fill_tableau()+
+  theme_minimal()
+dev.off()    
+    
+#########################################################
+
+
+```
+
+
+####values not correlated############
+
+
+
+```{r}
+
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(ggthemes)
+
+
+
+pdf(file = "BAR_PLOT_ONE.pdf", paper = "special",width=9,height=7)
+data_plot%>%ungroup()%>%
+               #group_by()%>%
+               select(-id)%>%distinct()%>%
+               select_if(is.factor)%>%
+               ungroup()%>%
+  select(default, everything()) %>%
+  gather(x, y, marital_status:residence_area_type) %>%
+  count(default, x, y) %>%
+  ggplot(aes(x = y, y = n, fill = default, color = default)) +
+    facet_wrap(~ x, ncol = 4, scales = "free") +
+    geom_bar(stat = "identity", alpha = 1) +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1),
+          legend.position = "top") +
+    scale_color_tableau() +
+    scale_fill_tableau()+
+    theme_minimal()
+dev.off()
+##############
+
+
+pdf(file = "bar_plots_2.pdf", paper = "special",width=9,height=7)
+data_plot%>%ungroup()%>%
+               select( default,  count_3_6_months_late, count_6_12_months_late, count_more_than_12_months_late, veh_owned, no_of_dep)%>%
+  gather(x, y, count_3_6_months_late:no_of_dep) %>%
+  count(default, x, y) %>%
+  ggplot(aes(x = y, y = n, fill = default, color = default)) +
+    facet_wrap(~ x, ncol = 3, scales = "free") +
+    geom_bar(stat = "identity", alpha = 1) +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1),
+          legend.position = "top") +
+    scale_color_tableau() +
+    scale_fill_tableau()+
+    theme_minimal()
+dev.off()
+
+###################
+
+
+#####look at the numeric variables #####
+
+
+pdf(file = "density_plots.pdf", paper = "special",width=9,height=7)
+data_plot%>%select(default, colnames(data_plot%>%select_if(is.double))) %>%
+            select(default, perc_premium_paid_by_cash_credit, age_in_days, income, risk_score, premium)%>%
+  gather(x, y, perc_premium_paid_by_cash_credit:premium) %>%
+  ggplot(aes(x = y, fill = default, color = default)) +
+    facet_wrap(~ x, ncol = 3, scales = "free") +
+    geom_density(alpha = 1, adjust = 3) +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1),
+          legend.position = "top") +
+    scale_color_tableau() +
+    scale_fill_tableau()+
+    theme_minimal()
+dev.off()
+
+```
+
+
+#####transformations####
+
+1. COnvert the age in days to age in years
+2. have an identifire as to whether the counter of number of times the premium was missed is important 
+3. 
+
+
+```{r}
+
+#install.packages("GGally")
+
+library(GGally)
+library(dplyr)
+
+pdf(file = "data_ggpairs.pdf", paper = "special",width=9,height=7)
+ggpairs(data_plot%>%select(default, perc_premium_paid_by_cash_credit, age_in_days, income, risk_score, premium), aes(colour = default, alpha = 0.4))
+dev.off()
+
+pdf(file = "ggpairs.pdf", paper = "special",width=9,height=7)
+ggpairs(data_plot%>%select(-id), aes(colour = default, alpha = 0.4))
+dev.off()
+
+pdf(file = "correlations.pdf", paper = "special",width=9,height=7)
+DataExplorer::plot_correlation(data_plot)
+dev.off()
+
+```
+

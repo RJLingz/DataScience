@@ -1,0 +1,648 @@
+---
+title: "project 3"
+author: "George Mamvura"
+date: "09/09/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+```{r}
+
+data <- read.csv("new_contact_data.csv", header = T)
+
+head(data)
+```
+
+
+#####look at the approach and think about the steps
+
+1. Cluster the clients according to their different variables and see which clients we can target with the specific interventions
+2. Look at the decidsion tree to explain the different results of the model 
+3. describing the clients in terms of their attributes so you can come up with archetypes for the different people and how to target them to prevent their default
+
+```{r}
+##data_cluster###
+library(recipes)
+library(dplyr)
+
+####change the datatypes of the data##
+data_cluster <- data%>%
+mutate(
+              marital_status = as.factor(marital_status), 
+              accomodation = as.factor(accomodation),
+              sourcing_channel = as.factor(sourcing_channel),
+              accomodation = as.factor(accomodation),
+              no_default = as.factor(no_default)
+              
+       )%>%
+  select(-c(late_payment,  id))
+
+
+####creating the recipe for the data 
+recipe_centre <- recipe(no_default  ~., data = data_cluster)
+
+###scale and centre the variables
+
+data_cluster_new <- recipe_centre%>%
+                      step_scale(all_numeric())%>%
+                      step_center(all_numeric())%>%
+                      step_nzv(all_x())
+                      #step_YeoJohnson(all_numeric())
+
+
+
+cluster_final <- prep(data_cluster_new, training = data_cluster , verbose = F, retain = T)
+
+cluster_data <- as.data.frame(cluster_final$template)
+
+
+
+
+
+```
+###########Create the partition ##################
+
+```{r}
+library(minDiff)
+set.seed(123)
+assign_values_cluster <- create_groups(cluster_data, 
+                               criteria_scale = c("risk_score", "premium", "perc_premium_paid_by_cash_credit" ),
+                               criteria_nominal = c("no_default"),
+                               tolerance_nominal = c(20,Inf),
+                               sets = 5, 
+                               repetitions = 5000)
+
+
+
+data_cluster_values <- assign_values_cluster%>%filter(newSet %in% c(1))
+
+rm(recipe_centre)
+```
+
+
+```{r}
+library(cluster)
+set.seed(8)
+
+gower.dissimilarity <- daisy(data_cluster_values, metric = "gower")
+
+gower.dist <- as.matrix(gower.dissimilarity)
+
+##########when no dissimialirity matrix is given can only use frey, mclain, cindex, silhouette and dunn index######
+
+r <-NbClust::NbClust(diss = gower.dissimilarity, distance = NULL,
+min.nc = 2, max.nc = 9 , method = "ward.D2", index = c("silhouette"))
+
+
+
+
+
+sil_width <- c(NA)
+for(i in 2:15){  
+  pam_fit <- pam(gower.dist, diss = TRUE, k = i)  
+  sil_width[i] <- pam_fit$silinfo$avg.width  
+}
+plot(1:15, sil_width,
+     xlab = "Number of clusters",
+     ylab = "Silhouette Width")
+lines(1:15, sil_width)
+
+###########final fit######
+
+pam_final <- pam(gower.dist, diss = TRUE, k = 6)
+
+
+  cluster_data <- tibble(cluster = pam_final$clustering)%>%
+                        mutate(cluster = as.factor(cluster))
+
+
+clustered_data <- new_data%>%
+                            bind_cols(cluster_data)
+
+
+?daisy
+
+```
+
+
+
+####Build rpart model to determine which variables are important in determining the default. 
+
+
+
+```{r}
+
+library(rpart)
+library(rpart.plot)
+library(rsample)
+library(caret)
+library(minDiff)
+library(dplyr)
+library(recipes)
+
+
+set.seed(123)
+
+data_plot <- data%>%dplyr::select(-c( marital_status, veh_owned, no_of_dep, sourcing_channel, residence_area_type, accomodation))%>%
+          mutate(
+              no_default = as.factor(no_default), 
+               id = as.factor(id)
+             
+       )
+
+
+#############sampled to have the same distribution in the no_default variable####
+####remmber to add th ecluster to the data ####
+library(minDiff)
+set.seed(123)
+assign_values <- create_groups(data_plot, 
+                               criteria_scale = c("risk_score", "premium", "perc_premium_paid_by_cash_credit" ),
+                               criteria_nominal = c("no_default"),
+                               tolerance_nominal = c(20,Inf),
+                               sets = 5, 
+                               repetitions = 5000)
+
+
+
+##########################
+####creating the recipe for the data 
+recipe_centre <- recipe(no_default  ~., data = assign_values%>%mutate(newSet = as.factor(newSet)))
+
+###scale and centre the variables
+
+data_try <- recipe_centre%>%
+                      step_scale(all_numeric())%>%
+                      step_center(all_numeric())%>%
+                      step_nzv(all_x())
+                      #step_YeoJohnson(all_numeric())
+
+
+
+data_final <- prep(data_try, training = assign_values%>%mutate(newSet = as.factor(newSet)) , verbose = F, retain = T)
+
+model_data <- as.data.frame(data_final$template)
+
+
+
+##########################################
+
+train_new <- model_data%>%filter(newSet %in% c("1","2","3","4"))%>%dplyr::select(-newSet)
+
+test_new <- anti_join(model_data%>%dplyr::select(-newSet), train_new)
+
+
+
+
+
+```
+
+#######################NORMALISED TRAIN###
+###build the rpart model ######
+
+
+```{r}
+
+#########rpart doesnt take predictor variables that are numbers - dumb I know so we need to use make.names to make the levels
+library(rpart.plot)
+library(rattle)
+
+
+
+train_new_level <- train_new%>%mutate(no_default = factor(no_default, 
+                                                         labels = make.names(levels(no_default) )
+                                                         )
+                    )%>%dplyr::select(-id)
+
+test_new_level <- test_new%>%mutate(no_default = factor(no_default, 
+                                                         labels = make.names(levels(no_default) )
+                                                         )
+                    )%>%dplyr::select(-id)
+
+set.seed(123)
+model_prune <- train(
+      no_default ~., data = train_new_level, 
+      method = "rpart",
+      trControl = trainControl(method = "repeatedcv",
+                               repeats = 3,
+                               classProbs=TRUE),
+      tuneLength = 30
+  
+)
+
+
+#########Pltting########
+plot(model_prune)
+model_prune$finalModel
+
+########################building the best rpart model#########cp = 0.006080486######
+unpruned_rpart = prune(model_prune$finalModel, cp= 0.0 ,"CP")
+
+
+
+##unpruned tree#####
+pdf("rpart_unpruned.pdf", paper = "special", width = 14, height = 12)
+rpart.plot(unpruned_rpart)
+dev.off()
+
+
+#Displaying the best decision tree based on rpart
+pdf("rpart.pdf", paper = "special", width = 14, height = 12)
+rpart.plot(model_prune$finalModel)
+dev.off()
+
+#Displaying the best  decision tree based on the Fancy Plot
+fancyRpartPlot(model_prune$finalModel)
+
+predicted.classes.test.y <- model_prune%>%predict(test_new_level, type = "raw")
+
+predicted.classes.test.prob <- model_prune%>%predict(test_new_level, type = "prob")
+
+
+mean(predicted.classes.test.y == test_new_level$no_default)
+
+
+confusionMatrix(predicted.classes.test.y,(test_new_level$no_default))
+
+
+fancyRpartPlot(simpler_rpart)
+
+
+
+length(predicted.classes.test.y)
+
+data%>%group_by(no_default)%>%
+      tally()
+
+
+```
+
+
+
+
+```{r}
+library("brglm2")
+library(MASS)
+library(ROCR)
+library(grid)
+library(broom)
+library(caret)
+library(tidyr)
+library(dplyr)
+library(scales)
+library(ggplot2)
+library(brglm)
+library(ggthemes)
+library(gridExtra)
+library(data.table)
+#---------------------------------------------------------    
+
+
+#logisitic_train <- train_set%>%mutate_if(is.double, scale)
+### Modelling: Logistic Regression
+logistic_1 <- glm(no_default ~ ., family = binomial, data = train_new%>%dplyr::select(-c(id)))
+
+summary(logistic_1)
+
+
+
+
+logistic_2 <- stepAIC(logistic_1, direction = "both",k=5)
+
+
+summary(logistic_2)
+vif(logistic_2)
+
+logistic_3 <- glm(car ~ dim_1 + dim_2 + dim_3 +  dim_6, family = binomial(link = probit), data = train_set)
+vif(logistic_3)
+summary(logistic_3)
+
+
+######VIF AIC tradeoff
+logistic_4 <- glm(car ~ dim_1 + dim_2 + dim_5 +  dim_6, family = binomial(link = probit), data = train_set)
+vif(logistic_4)
+
+summary(logistic_4)
+
+#####################################
+
+knn_train <-  train_new%>%dplyr::select(-c(id))%>%mutate(no_default = as.factor(if_else( no_default== "1", "No_Default", "Default")))
+
+knn_test <- test_new%>%dplyr::select(-c(id))%>%mutate(no_default = as.factor(if_else( no_default== "1", "No_Default", "Default")))
+                         
+
+
+
+ctrl <- trainControl(classProbs = TRUE, 
+                     summaryFunction = twoClassSummary,
+                    savePredictions = TRUE,
+                     allowParallel = TRUE)
+
+mod_fit <- caret::train(no_default ~ . ,  data=knn_train, method="glm", family="binomial", trControl = ctrl)
+
+pred_logistic <- predict(mod_fit, newdata=knn_test, type = "prob")
+pred_y <- predict(mod_fit, newdata=knn_test, type = "raw")
+
+
+confusionMatrix( as.factor( pred_y),as.factor(knn_test$no_default ))
+
+
+resample_stats_logisitic <- thresholder(mod_fit, 
+                              threshold = seq(.00, 1, by = 0.02), 
+                              final = TRUE)
+
+resample_stats_logisitic%>%arrange(desc(Sensitivity))%>%filter(Sensitivity > 0.90)%>%mutate(diff = Specificity - Sensitivity)%>%arrange((diff))
+
+
+####choose threshold of 
+logistic_predictions <- pred_logistic%>%mutate(final_class_0.28 = if_else(Car < 0.28, "No_Car", "Car"),
+                                       final_class_0.06 = if_else(Car < 0.06, "No_Car", "Car"))
+
+
+
+confusionMatrix( as.factor( logistic_predictions$final_class_0.28),as.factor(knn_test$Label ))
+
+
+confusionMatrix( as.factor( logistic_predictions$final_class_0.06),as.factor(knn_test$Label ))
+
+
+knn_test%>%group_by(no_default)%>%tally()
+
+```
+
+
+
+
+```{r}
+# GLM:
+fit.glm <- h2o.glm(x = x, y = y, training_frame = train,
+                   validation_frame = test, balance_classes = TRUE, family = "binomial", seed = 12345)
+
+# Evaluation performance
+fit.glm
+
+# RANDOM FOREST:
+fit.rf <- h2o.randomForest(x = x, y = y, training_frame = train,
+                   validation_frame = test, balance_classes = TRUE, seed = 12345)
+
+# Evaluation performance
+fit.rf
+
+# DEEP LEARNING:
+fit.nn <- h2o.deeplearning(x = x, y = y, training_frame = train,
+                           validation_frame = test, balance_classes = TRUE, seed = 12345)
+
+# Evaluation performance
+fit.nn
+
+# GBM:
+fit.gbm <- h2o.gbm(x = x, y = y, training_frame = train,
+                           validation_frame = test, balance_classes = TRUE, seed = 12345)
+
+fit.gbm
+
+
+
+# Evaluation performance
+
+knn_train%>%group_by(no_default)%>%tally()
+```
+
+
+
+```{r}
+#install.packages("h2o")
+library(h2o)
+h2o.init(max_mem_size = "5g")
+
+
+train <- as.h2o(knn_train)
+test <- as.h2o(knn_test)
+
+
+train[, "no_default"] <- as.factor(train[, "no_default"])
+test[, "no_default"] <- as.factor(test[, "no_default"])
+
+
+y <-  "no_default"
+
+
+x <- setdiff(names(train), "no_default")
+
+
+##############DO GBM###############
+
+
+hyper_params = list( 
+  ## restrict the search to the range of max_depth established above
+  max_depth = seq(5,40,5),                                      
+  
+  ## search a large space of row sampling rates per tree
+  sample_rate = seq(0.2,1,0.01),                                             
+  
+  ## search a large space of column sampling rates per split
+  col_sample_rate = seq(0.2,1,0.01),                                         
+  
+  ## search a large space of column sampling rates per tree
+  col_sample_rate_per_tree = seq(0.2,1,0.01),                                
+  
+  ## search a large space of how column sampling per split should change as a function of the depth of the split
+  col_sample_rate_change_per_level = seq(0.9,1.1,0.01),                      
+  
+  ## search a large space of the number of min rows in a terminal node
+  min_rows = 2,                                 
+  
+  ## search a large space of the number of bins for split-finding for continuous and integer columns
+  nbins = 2^seq(4,10,1),                                                     
+  
+  ## search a large space of the number of bins for split-finding for categorical columns
+  nbins_cats = 2^seq(4,12,1),                                                
+  
+  ## search a few minimum required relative error improvement thresholds for a split to happen
+  min_split_improvement = c(0,1e-8,1e-6,1e-4), 
+  
+  learn_rate = c(0.02) 
+  
+  ## try all histogram types (QuantilesGlobal and RoundRobin are good for numeric columns with outliers)
+    
+)
+
+search_criteria = list(
+  ## Random grid search
+  strategy = "RandomDiscrete",      
+  
+  ## limit the runtime to 60 minutes
+  max_runtime_secs = 4000,         
+  
+  ## build no more than 100 models
+  max_models = 30,                  
+  
+  ## random number generator seed to make sampling of parameter combinations reproducible
+  seed = 1234,                        
+  
+  ## early stopping once the leaderboard of the top 5 models is converged to 0.1% relative difference
+  stopping_rounds = 5,                
+  stopping_metric = "AUCPR",
+  stopping_tolerance = 1e-6
+  ## score every 10 trees to make early stopping reproducible (it depends on the scoring interval)
+  
+)
+
+
+
+grid <- h2o.grid(
+  ## hyper parameters
+  hyper_params = hyper_params,
+  
+  ## hyper-parameter search configuration (see above)
+  search_criteria = search_criteria,
+  
+  ## which algorithm to run
+  algorithm = "gbm",
+  
+  ## identifier for the grid, to later retrieve it
+  grid_id = "final_grids_final3", 
+  
+  ## standard model parameters
+  x = x, 
+  y = y, 
+  training_frame = train, 
+  validation_frame = train,
+  
+  ## more trees is better if the learning rate is small enough
+  ## use "more than enough" trees - we have early stopping
+  ntrees = 10000,                                                            
+  
+  ## smaller learning rate is better
+  ## since we have learning_rate_annealing, we can afford to start with a bigger learning rate
+                                                          
+  
+  ## learning rate annealing: learning_rate shrinks by 1% after every tree 
+  ## (use 1.00 to disable, but then lower the learning_rate)
+  learn_rate_annealing = 1,                                               
+  
+  ## early stopping based on timeout (no model should take more than 1 hour - modify as needed)
+  max_runtime_secs = 3600,                                                 
+  
+  ## early stopping once the validation AUC doesn't improve by at least 0.01% for 5 consecutive scoring events
+  stopping_rounds = 5, stopping_tolerance = 1e-4, stopping_metric = "AUCPR", 
+  
+  ## score every 10 trees to make early stopping reproducible (it depends on the scoring interval)
+  score_tree_interval = 10,                                                
+  
+  ## base random number generator seed for each model (automatically gets incremented internally for each model)
+  seed = 1234,
+  
+  balance_classes = TRUE
+)
+
+
+## Sort the grid models by AUC
+## Sort the grid models by AUC
+sortedGrid <- h2o.getGrid("final_grids_final3", sort_by = "f1", decreasing = T)@summary_table    
+sortedGrid
+
+
+
+best.gbm.1.0.AUCPR <- h2o.getModel(sortedGrid$model_ids[1])
+
+##############################
+
+perf <- h2o.performance(best.gbm.1.0.AUCPR, test)
+
+h2o.confusionMatrix(object = best.gbm.1.0.AUCPR, 
+                        newdata = test, 
+                        metrics = "mean_per_class_accuracy")
+
+model_path <- h2o.saveModel(object=best.gbm.1.0.AUCPR, path=getwd(), force=TRUE)
+
+g <- h2o.performance(best.gbm.1.0.AUCPR, test)
+
+
+h2o.find_threshold_by_max_metric(perf,  "mean_per_class_accuracy")
+
+h2o.varimp_plot(best.gbm.1.0.AUCPR)
+
+test.pred <- h2o.predict(best.gbm.1.0.AUCPR, test)
+
+```
+
+```{r}
+library(ggthemes)
+library(ggplot2)
+
+results_prediction <- as.data.frame(test.pred)%>%
+                                    mutate(class = case_when(
+                                                          No_Default >= 0.9305772 ~ "Unlikely",
+                                                          No_Default < 0.9305772 & No_Default >= 0.80 ~ "Medium Risk",
+                                                          No_Default < 0.8 ~ "High Risk"
+                                    ) 
+                                    
+                                )
+
+
+
+results_prediction%>%group_by(prediction)%>%tally()
+
+hist(results_prediction$Default)
+
+hist(results_prediction$No_Default)
+
+gh <- results_prediction%>%group_by(class)%>%tally()
+
+ggplot(data=gh, aes(x=class, y=n, fill=class)) +
+geom_bar(stat="identity", color="black", position=position_dodge())+
+  
+  geom_text(aes(label=n), vjust=1.6, color="white", size=5)+
+  scale_color_tableau()+
+  scale_fill_manual(values=c("#ff420e", "#f98866", "#80bd9e"))+
+  theme_minimal()
+
+
+```
+
+
+```{r}
+library(iml)
+
+# 1. create a data frame with just the features
+features <- as.data.frame(knn_test) %>% dplyr::select(-no_default)
+
+# 2. Create a vector with the actual responses
+response <- as.data.frame((as.factor(knn_test$no_default)), col.names = "no_default")
+
+# 3. Create custom predict function that returns the predicted values as a
+#    vector (probability of purchasing in our example)
+pred <- function(model, newdata)  {
+  results <- as.data.frame(h2o.predict(model, as.h2o(newdata)))
+  return(results[[3L]])
+}
+
+# example of prediction output
+pred(best.gbm.1.0.AUCPR, features) %>% head()
+
+
+predictor.gbm <- Predictor$new(
+  model = best.gbm.1.0.AUCPR, 
+  data = features, 
+  y = response, 
+  predict.fun = pred,
+  class = "classification"
+  )
+
+str(predictor.gbm)
+
+tree <- TreeSurrogate$new(predictor.gbm, maxdepth = 3)
+
+plot(tree)
+
+```
+
+
+
+
+
